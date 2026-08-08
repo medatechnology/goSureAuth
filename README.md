@@ -1,118 +1,86 @@
-# gosimpleauth
+# goSureAuth
 
-Go client library for MedaAuth SaaS authentication service.
+Official Go client for the **sureAuth** hosted auth service. One-line
+integration: the library reads your credentials from the environment and
+handles API-key auth, project scoping, OTP challenges and token refresh —
+you never hardcode credentials.
 
-## Installation
+## Install
 
 ```bash
-go get github.com/medatechnology/gosimpleauth@latest
+go get github.com/medatechnology/goSureAuth@latest
 ```
 
-## Quick Start
+## Quick start (server-side)
 
 ```go
 package main
 
 import (
-    "context"
-    "fmt"
-    "log"
+	"context"
+	"fmt"
+	"log"
 
-    "github.com/medatechnology/medaauth/clients/gosimpleauth"
+	"github.com/medatechnology/goSureAuth"
 )
 
 func main() {
-    // Create client with API credentials
-    client := gosimpleauth.NewWithDefaults(
-        "https://auth.example.com",
-        "your_api_key",
-        "your_api_secret",
-    )
+	// Zero-config: reads SUREAUTH_SERVER_URL + SUREAUTH_API_KEY from env.
+	client, err := gosureauth.New()
+	if err != nil {
+		log.Fatal(err)
+	}
+	ctx := context.Background()
 
-    ctx := context.Background()
+	// One-line sign-in with your project's configured login method
+	// (email/phone/username × password/pin/otp).
+	auth, err := client.Auth(ctx, "user@example.com", "SecurePassword123!")
+	if err != nil {
+		log.Fatal(err)
+	}
 
-    // Register a new user
-    auth, err := client.Register(ctx, gosimpleauth.RegisterRequest{
-        Email:    "user@example.com",
-        Password: "secure_password",
-        Username: "username",
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-    fmt.Printf("Registered user: %s\n", auth.User.Email)
+	// The server may ask for more steps (OTP, phone, MFA):
+	for _, ch := range auth.Challenges {
+		switch ch.Type {
+		case gosureauth.ChallengeOTPRequired:
+			_, _ = client.SendOTP(ctx, gosureauth.SendOTPRequest{Identifier: ch.Field, Purpose: "login"})
+			auth, err = client.VerifyOTP(ctx, ch.Field, "123456")
+		case gosureauth.ChallengePhoneRequired:
+			auth, err = client.CompletePhone(ctx, gosureauth.CompletePhoneRequest{Email: ch.Field, Phone: "+62812..."})
+		}
+	}
 
-    // Login
-    auth, err = client.Login(ctx, "user@example.com", "secure_password")
-    if err != nil {
-        log.Fatal(err)
-    }
-    fmt.Printf("Access Token: %s\n", auth.AccessToken)
-
-    // Validate token
-    validation, err := client.ValidateToken(ctx, auth.AccessToken)
-    if err != nil {
-        log.Fatal(err)
-    }
-    fmt.Printf("Token valid: %v, User: %s\n", validation.Valid, validation.Email)
-
-    // Logout
-    if err := client.Logout(ctx, auth.AccessToken); err != nil {
-        log.Fatal(err)
-    }
-    fmt.Println("Logged out successfully")
+	fmt.Println("Access token:", auth.AccessToken)
+	me, _ := client.Me(ctx, auth.AccessToken)
+	fmt.Println("User:", me.AppUserID)
 }
 ```
 
-## Token Management
-
-For automatic token refresh:
+## Hosted login (popup/redirect)
 
 ```go
-// After successful login
-tokenMgr := gosimpleauth.NewTokenManager(
-    client,
-    auth.AccessToken,
-    auth.RefreshToken,
-    auth.ExpiresIn,
-)
-
-// Set callback for token refresh (e.g., to update stored tokens)
-tokenMgr.OnRefresh(func(newToken string) {
-    fmt.Println("Token refreshed:", newToken)
-})
-
-// Get a valid access token (auto-refreshes if needed)
-token, err := tokenMgr.GetAccessToken(ctx)
-if err != nil {
-    log.Fatal(err)
-}
+url, _ := client.LoginURL(ctx, "https://app.com/auth/callback")
+// redirect the browser to url; after sign-in the engine redirects back with ?code=...
+auth, err := client.CompleteLogin(ctx, code, "https://app.com/auth/callback")
 ```
 
-## Error Handling
+## Token refresh
 
 ```go
-auth, err := client.Login(ctx, email, password)
-if err != nil {
-    if apiErr, ok := err.(*gosimpleauth.APIError); ok {
-        if apiErr.IsUnauthorized() {
-            fmt.Println("Invalid credentials")
-        } else if apiErr.IsTokenExpired() {
-            fmt.Println("Token expired, please refresh")
-        }
-        fmt.Printf("Error: %s (code: %s)\n", apiErr.Message, apiErr.Code)
-    }
-    return
-}
+tm := gosureauth.NewTokenManager(client, auth.AccessToken, auth.RefreshToken, auth.ExpiresIn)
+tm.OnRefresh(func(newToken string) { /* persist */ })
+token, _ := tm.GetAccessToken(ctx)
 ```
 
-## Renaming This Library
+## Config
 
-If you need to rename this library in the future:
+| Env | Meaning |
+|-----|---------|
+| `SUREAUTH_SERVER_URL` | Engine URL (default `https://auth.sureauth.app`) |
+| `SUREAUTH_API_KEY` | Your project API key (created in the dashboard) |
 
-1. **Rename the directory** to your new name
-2. **Update `go.mod`**: Change `module github.com/medatechnology/gosimpleauth` to your new module path
-3. **Update package declaration** in all `.go` files (first line of each file)
-4. **Create new GitHub repo** with the new name and push
+Or `gosureauth.NewWithConfig(gosureauth.Config{...})`.
 
-The Go module path in `go.mod` is what users will `go get`, so choose something memorable!
+## License
+
+MIT

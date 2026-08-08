@@ -2,309 +2,215 @@ package gosureauth
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
-	"time"
 )
 
-// These tests require a running SureAuth server
-// Run with: DB_NAME=irongate go run ../../cmd/server/main.go
-// Then: go test -v
-
-func getTestClient() *Client {
-	baseURL := os.Getenv("TEST_SERVER_URL")
-	if baseURL == "" {
-		baseURL = "http://localhost:8080"
-	}
-
-	apiKey := os.Getenv("TEST_API_KEY")
-	if apiKey == "" {
-		apiKey = "test-api-key" // Use a real API key from your test project
-	}
-
-	apiSecret := os.Getenv("TEST_API_SECRET")
-	if apiSecret == "" {
-		apiSecret = "test-api-secret" // Use a real API secret from your test project
-	}
-
-	return NewWithDefaults(baseURL, apiKey, apiSecret)
+// testServer returns a client wired to an httptest server that routes by path.
+func testServer(t *testing.T, handler http.HandlerFunc) *Client {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return NewWithConfig(Config{ServerURL: srv.URL, APIKey: "test-key"})
 }
 
-func TestClientCreation(t *testing.T) {
-	client := getTestClient()
-	if client == nil {
-		t.Fatal("Expected non-nil client")
+func writeJSON(w http.ResponseWriter, status int, payload map[string]interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(payload)
+}
+
+func TestNewRequiresAPIKey(t *testing.T) {
+	t.Setenv(EnvAPIKey, "")
+	t.Setenv(EnvServerURL, "")
+	if _, err := New(); err == nil {
+		t.Fatal("expected error without API key")
 	}
-	if client.baseURL == "" {
-		t.Error("Expected baseURL to be set")
+	t.Setenv(EnvAPIKey, "key")
+	if _, err := New(); err != nil {
+		t.Fatalf("New: %v", err)
 	}
 }
 
-func TestRegister(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	client := getTestClient()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Generate unique email/username for test using nanoseconds
-	unique := fmt.Sprintf("%d", time.Now().UnixNano())
-	email := "test-" + unique + "@example.com"
-	username := "testuser" + unique
-
-	result, err := client.Register(ctx, RegisterRequest{
-		Email:    email,
-		Password: "TestPassword123!",
-		Username: username,
+func TestRegisterAndLogin(t *testing.T) {
+	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-API-Key") != "test-key" {
+			writeJSON(w, 401, map[string]interface{}{"success": false, "error": map[string]string{"code": "UNAUTHORIZED", "message": "bad key"}})
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v1/auth/register":
+			writeJSON(w, 200, map[string]interface{}{
+				"success": true,
+				"data": map[string]interface{}{
+					"access_token": "reg-token", "refresh_token": "reg-refresh",
+					"expires_in": 900, "token_type": "Bearer",
+					"user": map[string]interface{}{"email": "a@b.c"},
+				},
+			})
+		case "/api/v1/auth/login":
+			writeJSON(w, 200, map[string]interface{}{
+				"success": true,
+				"data": map[string]interface{}{
+					"access_token": "login-token", "refresh_token": "login-refresh",
+					"expires_in": 900,
+				},
+			})
+		default:
+			writeJSON(w, 404, map[string]interface{}{"success": false, "error": map[string]string{"code": "NOT_FOUND", "message": r.URL.Path}})
+		}
 	})
 
+	ctx := context.Background()
+	reg, err := c.Register(ctx, AuthRequest{Email: "a@b.c", Password: "Secret123!"})
 	if err != nil {
-		t.Fatalf("Register failed: %v", err)
+		t.Fatalf("Register: %v", err)
 	}
-
-	if result.User.Email != email {
-		t.Errorf("Expected email %s, got %s", email, result.User.Email)
+	if reg.AccessToken != "reg-token" || reg.User == nil || reg.User.Email != "a@b.c" {
+		t.Fatalf("register = %+v", reg)
 	}
-
-	if result.AccessToken == "" {
-		t.Error("Expected non-empty access token")
+	auth, err := c.Auth(ctx, "a@b.c", "Secret123!")
+	if err != nil {
+		t.Fatalf("Auth: %v", err)
 	}
-
-	if result.RefreshToken == "" {
-		t.Error("Expected non-empty refresh token")
+	if auth.AccessToken != "login-token" {
+		t.Fatalf("login = %+v", auth)
 	}
-
-	t.Logf("Registered user: %s (ID: %s)", result.User.Email, result.User.ID)
 }
 
-func TestLoginAndValidate(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	client := getTestClient()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// First register a user
-	unique := fmt.Sprintf("%d", time.Now().UnixNano())
-	email := "logintest-" + unique + "@example.com"
-	username := "logintest" + unique
-	password := "TestPassword123!"
-
-	_, err := client.Register(ctx, RegisterRequest{
-		Email:    email,
-		Password: password,
-		Username: username,
+func TestOTPChallengeFlow(t *testing.T) {
+	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/login":
+			writeJSON(w, 200, map[string]interface{}{
+				"success": true,
+				"data": map[string]interface{}{
+					"challenges": []map[string]string{{"type": "otp_required", "field": "user@x.com"}},
+				},
+			})
+		case "/api/v1/auth/otp/send":
+			writeJSON(w, 200, map[string]interface{}{"success": true, "data": map[string]interface{}{
+				"message_id": "m1", "channel": "email", "expires_in": 300, "cost": 0, "currency": "USD",
+			}})
+		case "/api/v1/auth/otp/verify":
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			if body["code"] != "123456" {
+				writeJSON(w, 400, map[string]interface{}{"success": false, "error": map[string]string{"code": "VALIDATION_ERROR", "message": "invalid OTP code"}})
+				return
+			}
+			writeJSON(w, 200, map[string]interface{}{"success": true, "data": map[string]interface{}{"access_token": "otp-token"}})
+		default:
+			writeJSON(w, 404, map[string]interface{}{"success": false, "error": map[string]string{"code": "NOT_FOUND", "message": r.URL.Path}})
+		}
 	})
+
+	ctx := context.Background()
+	res, err := c.Login(ctx, "user@x.com", "")
 	if err != nil {
-		t.Fatalf("Register failed: %v", err)
+		t.Fatalf("Login: %v", err)
 	}
-
-	// Now login
-	loginResult, err := client.Login(ctx, email, password)
+	if len(res.Challenges) != 1 || res.Challenges[0].Type != ChallengeOTPRequired {
+		t.Fatalf("expected otp challenge, got %+v", res.Challenges)
+	}
+	if _, err := c.SendOTP(ctx, SendOTPRequest{Identifier: "user@x.com", Purpose: "login"}); err != nil {
+		t.Fatalf("SendOTP: %v", err)
+	}
+	done, err := c.VerifyOTP(ctx, "user@x.com", "123456")
 	if err != nil {
-		t.Fatalf("Login failed: %v", err)
+		t.Fatalf("VerifyOTP: %v", err)
 	}
-
-	if loginResult.AccessToken == "" {
-		t.Error("Expected non-empty access token from login")
+	if done.AccessToken != "otp-token" {
+		t.Fatalf("verify = %+v", done)
 	}
-
-	t.Logf("Login successful, token type: %s, expires in: %ds", loginResult.TokenType, loginResult.ExpiresIn)
-
-	// Validate the token
-	validation, err := client.ValidateToken(ctx, loginResult.AccessToken)
-	if err != nil {
-		t.Fatalf("ValidateToken failed: %v", err)
+	if _, err := c.VerifyOTP(ctx, "user@x.com", "000000"); err == nil {
+		t.Fatal("expected error on wrong code")
 	}
-
-	if !validation.Valid {
-		t.Error("Expected token to be valid")
-	}
-
-	if validation.Email != email {
-		t.Errorf("Expected email %s, got %s", email, validation.Email)
-	}
-
-	t.Logf("Token valid for user: %s (ID: %s)", validation.Email, validation.UserID)
 }
 
-func TestRefreshToken(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	client := getTestClient()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Register and login
-	unique := fmt.Sprintf("%d", time.Now().UnixNano())
-	email := "refreshtest-" + unique + "@example.com"
-	username := "refreshtest" + unique
-	password := "TestPassword123!"
-
-	_, err := client.Register(ctx, RegisterRequest{
-		Email:    email,
-		Password: password,
-		Username: username,
+func TestSettingsAndLoginURL(t *testing.T) {
+	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/projects/settings" {
+			writeJSON(w, 200, map[string]interface{}{"success": true, "data": map[string]interface{}{
+				"ProjectID": "proj-1", "IdentifierType": "phone", "CredentialType": "pin",
+				"PinLength": 6, "AllowRegistration": true, "AllowGoogleSSO": true,
+			}})
+			return
+		}
+		writeJSON(w, 404, map[string]interface{}{"success": false, "error": map[string]string{"code": "NOT_FOUND", "message": r.URL.Path}})
 	})
+	ctx := context.Background()
+	s, err := c.Settings(ctx)
+	if err != nil || s.ProjectID != "proj-1" || s.CredentialType != "pin" {
+		t.Fatalf("settings = %+v, %v", s, err)
+	}
+	u, err := c.LoginURL(ctx, "https://app.com/cb")
 	if err != nil {
-		t.Fatalf("Register failed: %v", err)
+		t.Fatalf("LoginURL: %v", err)
 	}
-
-	loginResult, err := client.Login(ctx, email, password)
-	if err != nil {
-		t.Fatalf("Login failed: %v", err)
+	if !strings.Contains(u, "/oauth/authorize?") || !strings.Contains(u, "client_id=proj-1") || !strings.Contains(u, "redirect_uri=") {
+		t.Fatalf("login url = %s", u)
 	}
-
-	// Refresh the token
-	newToken, err := client.RefreshToken(ctx, loginResult.RefreshToken)
-	if err != nil {
-		t.Fatalf("RefreshToken failed: %v", err)
-	}
-
-	if newToken == "" {
-		t.Error("Expected non-empty new access token")
-	}
-
-	// The new token should be valid
-	validation, err := client.ValidateToken(ctx, newToken)
-	if err != nil {
-		t.Fatalf("ValidateToken for new token failed: %v", err)
-	}
-
-	if !validation.Valid {
-		t.Error("Expected refreshed token to be valid")
-	}
-
-	t.Logf("Refreshed token is valid for user: %s", validation.Email)
 }
 
-func TestLogout(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	client := getTestClient()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Register and login
-	unique := fmt.Sprintf("%d", time.Now().UnixNano())
-	email := "logouttest-" + unique + "@example.com"
-	username := "logouttest" + unique
-	password := "TestPassword123!"
-
-	_, err := client.Register(ctx, RegisterRequest{
-		Email:    email,
-		Password: password,
-		Username: username,
+func TestCompleteLoginExchangesCode(t *testing.T) {
+	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/settings":
+			writeJSON(w, 200, map[string]interface{}{"success": true, "data": map[string]interface{}{"ProjectID": "proj-1"}})
+		case "/oauth/token":
+			if r.Header.Get("X-API-Key") != "test-key" {
+				writeJSON(w, 401, map[string]interface{}{"success": false})
+				return
+			}
+			r.ParseForm()
+			if r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("code") != "code-abc" {
+				writeJSON(w, 400, map[string]interface{}{"error": "invalid_grant", "error_description": "bad code"})
+				return
+			}
+			writeJSON(w, 200, map[string]interface{}{"access_token": "exchanged", "refresh_token": "r", "expires_in": 900, "token_type": "Bearer"})
+		default:
+			writeJSON(w, 404, map[string]interface{}{"success": false})
+		}
 	})
+	ctx := context.Background()
+	res, err := c.CompleteLogin(ctx, "code-abc", "https://app.com/cb")
 	if err != nil {
-		t.Fatalf("Register failed: %v", err)
+		t.Fatalf("CompleteLogin: %v", err)
 	}
-
-	loginResult, err := client.Login(ctx, email, password)
-	if err != nil {
-		t.Fatalf("Login failed: %v", err)
+	if res.AccessToken != "exchanged" {
+		t.Fatalf("result = %+v", res)
 	}
-
-	// Logout
-	err = client.Logout(ctx, loginResult.AccessToken)
-	if err != nil {
-		t.Fatalf("Logout failed: %v", err)
-	}
-
-	t.Log("Logout successful")
 }
 
-func TestTokenManager(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	client := getTestClient()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Register and login
-	unique := fmt.Sprintf("%d", time.Now().UnixNano())
-	email := "tokenmanager-" + unique + "@example.com"
-	username := "tokenmanager" + unique
-	password := "TestPassword123!"
-
-	_, err := client.Register(ctx, RegisterRequest{
-		Email:    email,
-		Password: password,
-		Username: username,
+func TestAPIErrorTyped(t *testing.T) {
+	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 400, map[string]interface{}{"success": false, "error": map[string]string{"code": "VALIDATION_ERROR", "message": "invalid PIN"}})
 	})
-	if err != nil {
-		t.Fatalf("Register failed: %v", err)
-	}
-
-	loginResult, err := client.Login(ctx, email, password)
-	if err != nil {
-		t.Fatalf("Login failed: %v", err)
-	}
-
-	// Create token manager
-	tm := NewTokenManager(client, loginResult.AccessToken, loginResult.RefreshToken, loginResult.ExpiresIn)
-
-	// Set refresh callback
-	refreshed := false
-	tm.OnRefresh(func(newToken string) {
-		refreshed = true
-		t.Logf("Token refreshed: %s...", newToken[:20])
-	})
-
-	// Get access token (should return current token since not expired)
-	token, err := tm.GetAccessToken(ctx)
-	if err != nil {
-		t.Fatalf("GetAccessToken failed: %v", err)
-	}
-
-	if token == "" {
-		t.Error("Expected non-empty token from TokenManager")
-	}
-
-	if tm.IsExpired() {
-		t.Error("Token should not be expired immediately after login")
-	}
-
-	// Note: refreshed would be true if we forced a refresh by setting a short expiry
-	_ = refreshed // Suppress unused variable warning - would be used in extended tests
-
-	t.Log("TokenManager working correctly")
-}
-
-func TestAPIErrorHandling(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	client := getTestClient()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Try to login with invalid credentials
-	_, err := client.Login(ctx, "nonexistent@example.com", "wrongpassword")
-	if err == nil {
-		t.Fatal("Expected login to fail with invalid credentials")
-	}
-
+	_, err := c.Login(context.Background(), "x", "y")
 	apiErr, ok := err.(*APIError)
 	if !ok {
-		t.Fatalf("Expected APIError, got %T: %v", err, err)
+		t.Fatalf("expected *APIError, got %T: %v", err, err)
 	}
-
-	if !apiErr.IsUnauthorized() {
-		t.Logf("Got error: %s (%s)", apiErr.Message, apiErr.Code)
+	if apiErr.Code != "VALIDATION_ERROR" || apiErr.Message != "invalid PIN" {
+		t.Fatalf("apiErr = %+v", apiErr)
 	}
-
-	t.Logf("Correctly received API error: %s", apiErr.Error())
 }
+
+func TestEnvDrivenClient(t *testing.T) {
+	t.Setenv(EnvAPIKey, "env-key")
+	t.Setenv(EnvServerURL, "http://env.example.com")
+	c, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if c.APIKey != "env-key" || c.ServerURL != "http://env.example.com" {
+		t.Fatalf("client = %+v", c)
+	}
+}
+
+var _ = os.Getenv
