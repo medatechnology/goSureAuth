@@ -91,9 +91,10 @@ type User struct {
 
 // Challenge is a next-step prompt from the server.
 type Challenge struct {
-	Type  string `json:"type"`
-	Field string `json:"field,omitempty"`
-	Hint  string `json:"hint,omitempty"`
+	Type   string   `json:"type"`
+	Field  string   `json:"field,omitempty"`
+	Hint   string   `json:"hint,omitempty"`
+	Fields []string `json:"fields,omitempty"`
 }
 
 // AuthResult is the normalized auth outcome (tokens or challenges).
