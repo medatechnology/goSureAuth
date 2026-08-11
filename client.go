@@ -1,9 +1,9 @@
-// Package gosureauth is the official Go client for the sureAuth hosted auth
+// Package sureauth is the official Go client for the sureAuth hosted auth
 // service. One-line integration: create the client from the environment
 // (SUREAUTH_SERVER_URL + SUREAUTH_API_KEY) and call Auth/Register — the
 // library handles API-key auth, project scoping, OTP challenges and token
 // refresh. Credentials are never hardcoded in your app.
-package gosureauth
+package sureauth
 
 import (
 	"bytes"
@@ -59,7 +59,7 @@ func New() (*Client, error) {
 	}
 	apiKey := os.Getenv(EnvAPIKey)
 	if apiKey == "" {
-		return nil, fmt.Errorf("gosureauth: %s is required", EnvAPIKey)
+		return nil, fmt.Errorf("sureauth: %s is required", EnvAPIKey)
 	}
 	return &Client{ServerURL: strings.TrimRight(serverURL, "/"), APIKey: apiKey, HTTP: &http.Client{Timeout: 30 * time.Second}}, nil
 }
@@ -183,9 +183,9 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	if e.Code != "" {
-		return fmt.Sprintf("gosureauth: %s: %s", e.Code, e.Message)
+		return fmt.Sprintf("sureauth: %s: %s", e.Code, e.Message)
 	}
-	return fmt.Sprintf("gosureauth: request failed (status %d)", e.Status)
+	return fmt.Sprintf("sureauth: request failed (status %d)", e.Status)
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +228,7 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 	var env envelope
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &env); err != nil {
-			return fmt.Errorf("gosureauth: decode response: %w", err)
+			return fmt.Errorf("sureauth: decode response: %w", err)
 		}
 	}
 	if resp.StatusCode >= 400 || env.Error != nil {

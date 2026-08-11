@@ -1,4 +1,4 @@
-package gosureauth
+package sureauth
 
 import (
 	"bytes"
@@ -99,7 +99,7 @@ func (c *Client) doAuthed(ctx context.Context, method, path, accessToken string,
 	var env envelope
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &env); err != nil {
-			return fmt.Errorf("gosureauth: decode response: %w", err)
+			return fmt.Errorf("sureauth: decode response: %w", err)
 		}
 	}
 	if resp.StatusCode >= 400 || env.Error != nil {

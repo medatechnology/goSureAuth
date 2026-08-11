@@ -1,4 +1,4 @@
-# goSureAuth
+# sureauth-go
 
 Official Go client for the **sureAuth** hosted auth service. One-line
 integration: the library reads your credentials from the environment and
@@ -8,7 +8,7 @@ you never hardcode credentials.
 ## Install
 
 ```bash
-go get github.com/medatechnology/goSureAuth@latest
+go get github.com/medatechnology/sureauth-go@latest
 ```
 
 ## Quick start (server-side)
@@ -21,12 +21,12 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/medatechnology/goSureAuth"
+	"github.com/medatechnology/sureauth-go"
 )
 
 func main() {
 	// Zero-config: reads SUREAUTH_SERVER_URL + SUREAUTH_API_KEY from env.
-	client, err := gosureauth.New()
+	client, err := sureauth-go.New()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -42,11 +42,11 @@ func main() {
 	// The server may ask for more steps (OTP, phone, MFA):
 	for _, ch := range auth.Challenges {
 		switch ch.Type {
-		case gosureauth.ChallengeOTPRequired:
-			_, _ = client.SendOTP(ctx, gosureauth.SendOTPRequest{Identifier: ch.Field, Purpose: "login"})
+		case sureauth-go.ChallengeOTPRequired:
+			_, _ = client.SendOTP(ctx, sureauth-go.SendOTPRequest{Identifier: ch.Field, Purpose: "login"})
 			auth, err = client.VerifyOTP(ctx, ch.Field, "123456")
-		case gosureauth.ChallengePhoneRequired:
-			auth, err = client.CompletePhone(ctx, gosureauth.CompletePhoneRequest{Email: ch.Field, Phone: "+62812..."})
+		case sureauth-go.ChallengePhoneRequired:
+			auth, err = client.CompletePhone(ctx, sureauth-go.CompletePhoneRequest{Email: ch.Field, Phone: "+62812..."})
 		}
 	}
 
@@ -67,7 +67,7 @@ auth, err := client.CompleteLogin(ctx, code, "https://app.com/auth/callback")
 ## Token refresh
 
 ```go
-tm := gosureauth.NewTokenManager(client, auth.AccessToken, auth.RefreshToken, auth.ExpiresIn)
+tm := sureauth-go.NewTokenManager(client, auth.AccessToken, auth.RefreshToken, auth.ExpiresIn)
 tm.OnRefresh(func(newToken string) { /* persist */ })
 token, _ := tm.GetAccessToken(ctx)
 ```
@@ -79,7 +79,7 @@ token, _ := tm.GetAccessToken(ctx)
 | `SUREAUTH_SERVER_URL` | Engine URL (default `https://auth.sureauth.app`) |
 | `SUREAUTH_API_KEY` | Your project API key (created in the dashboard) |
 
-Or `gosureauth.NewWithConfig(gosureauth.Config{...})`.
+Or `sureauth-go.NewWithConfig(sureauth-go.Config{...})`.
 
 ## License
 

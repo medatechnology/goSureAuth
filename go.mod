@@ -1,4 +1,4 @@
-module github.com/medatechnology/goSureAuth
+module github.com/medatechnology/sureauth-go
 
 go 1.21
 

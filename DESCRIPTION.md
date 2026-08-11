@@ -1,4 +1,4 @@
-# DESCRIPTION — gosureauth (Go client SDK)
+# DESCRIPTION — sureauth-go (Go client SDK)
 
 > **Read this first.** The official Go client for the sureAuth hosted auth
 > service. Contract: the engine's `/api/v1/*` + `/oauth/*` (see
@@ -10,7 +10,7 @@ A Go library that lets a client app talk to the sureAuth engine without
 hand-rolling API-key auth, JWT handling or OTP challenge flows:
 
 ```go
-client := gosureauth.New()   // reads SUREAUTH_SERVER_URL + SUREAUTH_API_KEY
+client := sureauth-go.New()   // reads SUREAUTH_SERVER_URL + SUREAUTH_API_KEY
 res, err := client.Auth(ctx, "user@example.com", "password123")
 // res.Tokens OR res.Challenges — a challenge is not an error
 ```
@@ -43,6 +43,6 @@ example (README examples must compile — they are the docs).
 
 ## Repo Facts
 
-- Module `github.com/medatechnology/gosureauth`; stdlib-only (keep it that way).
+- Module `github.com/medatechnology/sureauth-go`; stdlib-only (keep it that way).
 - Part of the sureAuth family: engine → SDKs → dashboard. Shared terms in
   `../sureauth-ecosystem.md`.

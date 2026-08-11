@@ -1,4 +1,4 @@
-package gosureauth
+package sureauth
 
 import (
 	"context"

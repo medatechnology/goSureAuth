@@ -1,4 +1,4 @@
-# AGENTS.md — goSureAuth (Go client SDK)
+# AGENTS.md — sureauth-go (Go client SDK)
 
 ## Purpose
 Official Go client for the sureAuth hosted auth service. One-line
